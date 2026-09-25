@@ -1,0 +1,66 @@
+<div class="page">
+  <div class="card">
+    <h2>Your account</h2>
+    <p class="muted">
+      Share this user ID with an SME so they can name you as the buyer on an invoice:
+    </p>
+    <code>{{ authService.currentUser()?.id }}</code>
+  </div>
+
+  <div class="card">
+    <h2>Invoices awaiting your action</h2>
+
+    @if (errorMessage()) {
+      <p class="error-text">{{ errorMessage() }}</p>
+    }
+
+    @if (loading()) {
+      <p class="muted">Loading...</p>
+    } @else if (invoices().length === 0) {
+      <p class="muted">No invoices yet. Ask an SME to create one naming you as the buyer.</p>
+    } @else {
+      <table>
+        <thead>
+          <tr>
+            <th>Invoice #</th>
+            <th>Face value</th>
+            <th>Due date</th>
+            <th>Status</th>
+            <th>Document</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (invoice of invoices(); track invoice.id) {
+            <tr>
+              <td>{{ invoice.invoiceNumber }}</td>
+              <td>{{ invoice.currency }} {{ invoice.faceValue }}</td>
+              <td>{{ invoice.dueDate }}</td>
+              <td><span class="badge" [class]="'status-' + invoice.status">{{ invoice.status }}</span></td>
+              <td>
+                @if (invoice.hasDocument) {
+                  <button class="secondary small" [disabled]="downloadingId() === invoice.id" (click)="download(invoice)">
+                    {{ downloadingId() === invoice.id ? 'Downloading...' : 'Download' }}
+                  </button>
+                } @else {
+                  <span class="muted">None</span>
+                }
+              </td>
+              <td>
+                @if (invoice.status === 'pending_buyer_confirmation') {
+                  <button
+                    class="small"
+                    [disabled]="confirmingId() === invoice.id"
+                    (click)="confirm(invoice)"
+                  >
+                    {{ confirmingId() === invoice.id ? 'Confirming...' : 'Confirm' }}
+                  </button>
+                }
+              </td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    }
+  </div>
+</div>

@@ -1,0 +1,130 @@
+<div class="page">
+  <div class="card">
+    <h2>Invoices open for bidding</h2>
+
+    @if (errorMessage()) {
+      <p class="error-text">{{ errorMessage() }}</p>
+    }
+
+    @if (loadingInvoices()) {
+      <p class="muted">Loading...</p>
+    } @else if (invoices().length === 0) {
+      <p class="muted">No confirmed invoices to bid on right now.</p>
+    } @else {
+      <table>
+        <thead>
+          <tr>
+            <th>Invoice #</th>
+            <th>Face value</th>
+            <th>Due date</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (invoice of invoices(); track invoice.id) {
+            <tr
+              class="clickable"
+              [class.selected]="selectedInvoice()?.id === invoice.id"
+              (click)="selectInvoice(invoice)"
+            >
+              <td>{{ invoice.invoiceNumber }}</td>
+              <td>{{ invoice.currency }} {{ invoice.faceValue }}</td>
+              <td>{{ invoice.dueDate }}</td>
+              <td><span class="badge" [class]="'status-' + invoice.status">{{ invoice.status }}</span></td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    }
+  </div>
+
+  @if (selectedInvoice(); as invoice) {
+    <div class="card">
+      <h2>{{ invoice.invoiceNumber }} — your bid</h2>
+
+      @if (loadingDetail()) {
+        <p class="muted">Loading...</p>
+      } @else if (myOffer(); as offer) {
+        <table>
+          <thead>
+            <tr>
+              <th>Advance rate</th>
+              <th>Advance amount</th>
+              <th>Fee</th>
+              <th>Status</th>
+              <th>Expires</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>{{ offer.advanceRate }}</td>
+              <td>{{ invoice.currency }} {{ offer.advanceAmount }}</td>
+              <td>{{ invoice.currency }} {{ offer.feeAmount }}</td>
+              <td><span class="badge" [class]="'status-' + offer.status">{{ offer.status }}</span></td>
+              <td>{{ offer.expiresAt | date: 'short' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      } @else {
+        <form [formGroup]="offerForm" (ngSubmit)="submitOffer()">
+          <div class="field-row">
+            <div class="form-group">
+              <label for="advanceRate">Advance rate (0–1)</label>
+              <input id="advanceRate" type="number" step="0.01" min="0.0001" max="1" formControlName="advanceRate" />
+            </div>
+            <div class="form-group">
+              <label for="feeAmount">Fee ({{ invoice.currency }})</label>
+              <input id="feeAmount" type="text" formControlName="feeAmount" placeholder="100.00" />
+            </div>
+            <div class="form-group">
+              <label for="expiresAt">Offer expires</label>
+              <input id="expiresAt" type="datetime-local" formControlName="expiresAt" />
+            </div>
+          </div>
+
+          <button type="submit" [disabled]="offerForm.invalid || submitting()">
+            {{ submitting() ? 'Submitting...' : 'Submit bid' }}
+          </button>
+        </form>
+      }
+    </div>
+
+    <div class="card">
+      <h2>{{ invoice.invoiceNumber }} — supporting document</h2>
+      @if (invoice.hasDocument) {
+        <p class="muted">{{ invoice.documentOriginalName }}</p>
+        <button class="secondary small" [disabled]="downloadingDocument()" (click)="downloadDocument(invoice)">
+          {{ downloadingDocument() ? 'Downloading...' : 'Download' }}
+        </button>
+      } @else {
+        <p class="muted">No document attached to this invoice.</p>
+      }
+    </div>
+
+    @if (transactions().length > 0) {
+      <div class="card">
+        <h2>{{ invoice.invoiceNumber }} — transaction history</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Amount</th>
+              <th>Status</th>
+              <th>When</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (tx of transactions(); track tx.id) {
+              <tr>
+                <td>{{ tx.type }}</td>
+                <td>{{ tx.currency }} {{ tx.amount }}</td>
+                <td><span class="badge" [class]="'status-' + tx.status">{{ tx.status }}</span></td>
+                <td>{{ tx.createdAt | date: 'short' }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+    }
+  }
+</div>

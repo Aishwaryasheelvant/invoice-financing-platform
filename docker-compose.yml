@@ -29,9 +29,9 @@ services:
       timeout: 5s
       retries: 10
 
-  app:
+  backend:
     build:
-      context: .
+      context: ./backend
       dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:

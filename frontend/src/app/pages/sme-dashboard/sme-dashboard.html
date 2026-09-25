@@ -1,0 +1,185 @@
+<div class="page">
+  <div class="card">
+    <h2>Create invoice</h2>
+    <form [formGroup]="createForm" (ngSubmit)="createInvoice()">
+      <div class="form-group">
+        <label for="buyerId">Buyer user ID</label>
+        <input id="buyerId" type="text" formControlName="buyerId" placeholder="Ask the buyer for their user ID" />
+      </div>
+
+      <div class="field-row">
+        <div class="form-group">
+          <label for="invoiceNumber">Invoice number</label>
+          <input id="invoiceNumber" type="text" formControlName="invoiceNumber" placeholder="INV-1001" />
+        </div>
+        <div class="form-group">
+          <label for="faceValue">Face value</label>
+          <input id="faceValue" type="text" formControlName="faceValue" placeholder="10000.00" />
+        </div>
+        <div class="form-group">
+          <label for="currency">Currency</label>
+          <input id="currency" type="text" formControlName="currency" />
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="form-group">
+          <label for="issueDate">Issue date</label>
+          <input id="issueDate" type="date" formControlName="issueDate" />
+        </div>
+        <div class="form-group">
+          <label for="dueDate">Due date</label>
+          <input id="dueDate" type="date" formControlName="dueDate" />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="document">Supporting document (optional, PDF/PNG/JPEG, max 5MB)</label>
+        <input id="document" type="file" accept=".pdf,.png,.jpg,.jpeg" (change)="onFileSelected($event)" />
+        @if (selectedFile(); as file) {
+          <span class="muted">Selected: {{ file.name }}</span>
+        }
+      </div>
+
+      @if (errorMessage()) {
+        <p class="error-text">{{ errorMessage() }}</p>
+      }
+
+      <button type="submit" [disabled]="createForm.invalid || creating()">
+        {{ creating() ? 'Creating...' : 'Create invoice' }}
+      </button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Your invoices</h2>
+
+    @if (loadingInvoices()) {
+      <p class="muted">Loading...</p>
+    } @else if (invoices().length === 0) {
+      <p class="muted">No invoices yet — create one above.</p>
+    } @else {
+      <table>
+        <thead>
+          <tr>
+            <th>Invoice #</th>
+            <th>Face value</th>
+            <th>Due date</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (invoice of invoices(); track invoice.id) {
+            <tr
+              class="clickable"
+              [class.selected]="selectedInvoice()?.id === invoice.id"
+              (click)="selectInvoice(invoice)"
+            >
+              <td>{{ invoice.invoiceNumber }}</td>
+              <td>{{ invoice.currency }} {{ invoice.faceValue }}</td>
+              <td>{{ invoice.dueDate }}</td>
+              <td><span class="badge" [class]="'status-' + invoice.status">{{ invoice.status }}</span></td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    }
+  </div>
+
+  @if (selectedInvoice(); as invoice) {
+    <div class="card">
+      <h2>{{ invoice.invoiceNumber }} — offers</h2>
+
+      @if (loadingDetail()) {
+        <p class="muted">Loading...</p>
+      } @else if (offers().length === 0) {
+        <p class="muted">No offers yet. Offers can only be submitted once the buyer has confirmed this invoice.</p>
+      } @else {
+        <table>
+          <thead>
+            <tr>
+              <th>Advance rate</th>
+              <th>Advance amount</th>
+              <th>Fee</th>
+              <th>Status</th>
+              <th>Expires</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (offer of offers(); track offer.id) {
+              <tr>
+                <td>{{ offer.advanceRate }}</td>
+                <td>{{ invoice.currency }} {{ offer.advanceAmount }}</td>
+                <td>{{ invoice.currency }} {{ offer.feeAmount }}</td>
+                <td><span class="badge" [class]="'status-' + offer.status">{{ offer.status }}</span></td>
+                <td>{{ offer.expiresAt | date: 'short' }}</td>
+                <td>
+                  @if (offer.status === 'pending' && invoice.status === 'confirmed') {
+                    <button
+                      class="small"
+                      [disabled]="acceptingOfferId() === offer.id"
+                      (click)="acceptOffer(offer)"
+                    >
+                      {{ acceptingOfferId() === offer.id ? 'Accepting...' : 'Accept' }}
+                    </button>
+                  }
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      }
+    </div>
+
+    <div class="card">
+      <h2>{{ invoice.invoiceNumber }} — supporting document</h2>
+
+      @if (invoice.hasDocument) {
+        <p class="muted">Attached: {{ invoice.documentOriginalName }}</p>
+        <button class="secondary small" [disabled]="downloadingDocument()" (click)="downloadDocument(invoice)">
+          {{ downloadingDocument() ? 'Downloading...' : 'Download' }}
+        </button>
+      } @else {
+        <p class="muted">No document attached.</p>
+      }
+
+      <div class="form-group" style="margin-top: 12px;">
+        <label>{{ invoice.hasDocument ? 'Replace document' : 'Attach a document' }}</label>
+        <input type="file" accept=".pdf,.png,.jpg,.jpeg" [disabled]="uploadingDocument()" (change)="uploadDocumentForSelected($event)" />
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>{{ invoice.invoiceNumber }} — transaction history</h2>
+
+      @if (transactions().length === 0) {
+        <p class="muted">
+          Nothing yet. Once an offer is accepted, a payout transaction appears here shortly after
+          (it's processed by a background job).
+        </p>
+      } @else {
+        <table>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Amount</th>
+              <th>Status</th>
+              <th>When</th>
+            </tr>
+          </thead>
+          <tbody>
+            @for (tx of transactions(); track tx.id) {
+              <tr>
+                <td>{{ tx.type }}</td>
+                <td>{{ tx.currency }} {{ tx.amount }}</td>
+                <td><span class="badge" [class]="'status-' + tx.status">{{ tx.status }}</span></td>
+                <td>{{ tx.createdAt | date: 'short' }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      }
+    </div>
+  }
+</div>
