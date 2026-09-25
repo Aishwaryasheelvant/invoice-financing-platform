@@ -6,6 +6,7 @@ import { InvoicesService } from '../../core/services/invoices.service';
 import { OffersService } from '../../core/services/offers.service';
 import { TransactionsService } from '../../core/services/transactions.service';
 import { downloadBlob } from '../../core/utils/download-blob';
+import { addMoney, percentOf } from '../../core/utils/money';
 import { Invoice } from '../../core/models/invoice.model';
 import { Offer } from '../../core/models/offer.model';
 import { Transaction } from '../../core/models/transaction.model';
@@ -99,6 +100,18 @@ export class FinancierDashboard implements OnInit {
           this.errorMessage.set(err.error?.message ?? 'Could not submit offer');
         },
       });
+  }
+
+  // --- Derived figures, string arithmetic only (see core/utils/money.ts).
+
+  /** Repaid from escrow on the due date: the advance back, plus the fee earned. */
+  receivedAtSettlement(offer: Offer): string {
+    return addMoney(offer.advanceAmount, offer.feeAmount);
+  }
+
+  /** Return on capital deployed — fee as a percentage of the amount advanced. */
+  returnOnAdvancePercent(offer: Offer): string {
+    return percentOf(offer.feeAmount, offer.advanceAmount);
   }
 
   downloadDocument(invoice: Invoice): void {

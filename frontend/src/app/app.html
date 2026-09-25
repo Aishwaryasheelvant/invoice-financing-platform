@@ -1,9 +1,13 @@
 @if (authService.isLoggedIn()) {
   <nav class="top-nav">
-    <strong>Invoice Financing Platform</strong>
-    <div class="identity">
-      {{ authService.currentUser()?.companyName }} · {{ authService.currentUser()?.role }}
-      <button class="secondary small" style="margin-left: 12px;" (click)="logout()">Log out</button>
+    <div class="brand">
+      <span class="brand-mark">IF</span>
+      <span>Invoice Financing</span>
+    </div>
+    <div class="nav-identity">
+      <span>{{ authService.currentUser()?.companyName }}</span>
+      <span class="badge role">{{ authService.currentUser()?.role }}</span>
+      <button class="secondary small" (click)="logout()">Log out</button>
     </div>
   </nav>
 }

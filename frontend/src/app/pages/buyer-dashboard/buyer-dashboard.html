@@ -1,66 +1,79 @@
 <div class="page">
+  <div class="page-header">
+    <h1>Buyer dashboard</h1>
+    <p>
+      Confirm invoices your suppliers raise against you. Confirming is what makes an invoice
+      financeable — it's your acknowledgement that the debt is real and you'll pay it on the due date.
+    </p>
+  </div>
+
+  @if (errorMessage()) {
+    <div class="alert">{{ errorMessage() }}</div>
+  }
+
   <div class="card">
-    <h2>Your account</h2>
-    <p class="muted">
-      Share this user ID with an SME so they can name you as the buyer on an invoice:
+    <h2>Your user ID</h2>
+    <p class="muted" style="margin-top: 0;">
+      Share this with a supplier so they can raise an invoice against you:
     </p>
     <code>{{ authService.currentUser()?.id }}</code>
   </div>
 
   <div class="card">
-    <h2>Invoices awaiting your action</h2>
-
-    @if (errorMessage()) {
-      <p class="error-text">{{ errorMessage() }}</p>
-    }
+    <h2>Invoices raised against you</h2>
 
     @if (loading()) {
-      <p class="muted">Loading...</p>
+      <div class="loading"><span class="spinner"></span> Loading invoices...</div>
     } @else if (invoices().length === 0) {
-      <p class="muted">No invoices yet. Ask an SME to create one naming you as the buyer.</p>
+      <div class="empty-state">
+        <strong>Nothing here yet</strong>
+        <span>Once a supplier raises an invoice naming you as the buyer, it'll show up here.</span>
+      </div>
     } @else {
-      <table>
-        <thead>
-          <tr>
-            <th>Invoice #</th>
-            <th>Face value</th>
-            <th>Due date</th>
-            <th>Status</th>
-            <th>Document</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          @for (invoice of invoices(); track invoice.id) {
+      <div class="table-wrap">
+        <table>
+          <thead>
             <tr>
-              <td>{{ invoice.invoiceNumber }}</td>
-              <td>{{ invoice.currency }} {{ invoice.faceValue }}</td>
-              <td>{{ invoice.dueDate }}</td>
-              <td><span class="badge" [class]="'status-' + invoice.status">{{ invoice.status }}</span></td>
-              <td>
-                @if (invoice.hasDocument) {
-                  <button class="secondary small" [disabled]="downloadingId() === invoice.id" (click)="download(invoice)">
-                    {{ downloadingId() === invoice.id ? 'Downloading...' : 'Download' }}
-                  </button>
-                } @else {
-                  <span class="muted">None</span>
-                }
-              </td>
-              <td>
-                @if (invoice.status === 'pending_buyer_confirmation') {
-                  <button
-                    class="small"
-                    [disabled]="confirmingId() === invoice.id"
-                    (click)="confirm(invoice)"
-                  >
-                    {{ confirmingId() === invoice.id ? 'Confirming...' : 'Confirm' }}
-                  </button>
-                }
-              </td>
+              <th>Invoice #</th>
+              <th>Amount due</th>
+              <th>Due date</th>
+              <th>Status</th>
+              <th>Document</th>
+              <th></th>
             </tr>
-          }
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            @for (invoice of invoices(); track invoice.id) {
+              <tr>
+                <td>{{ invoice.invoiceNumber }}</td>
+                <td class="num">{{ invoice.currency }} {{ invoice.faceValue }}</td>
+                <td>{{ invoice.dueDate }}</td>
+                <td><span class="badge" [class]="'status-' + invoice.status">{{ invoice.status }}</span></td>
+                <td>
+                  @if (invoice.hasDocument) {
+                    <button
+                      class="secondary small"
+                      [disabled]="downloadingId() === invoice.id"
+                      (click)="download(invoice)"
+                    >
+                      {{ downloadingId() === invoice.id ? 'Downloading...' : 'Download' }}
+                    </button>
+                  } @else {
+                    <span class="subtle">—</span>
+                  }
+                </td>
+                <td>
+                  @if (invoice.status === 'pending_buyer_confirmation') {
+                    <button class="small" [disabled]="confirmingId() === invoice.id" (click)="confirm(invoice)">
+                      {{ confirmingId() === invoice.id ? 'Confirming...' : 'Confirm' }}
+                    </button>
+                  }
+                </td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
     }
   </div>
 </div>

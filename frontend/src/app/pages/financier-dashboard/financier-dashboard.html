@@ -1,84 +1,109 @@
 <div class="page">
-  <div class="card">
-    <h2>Invoices open for bidding</h2>
+  <div class="page-header">
+    <h1>Financier dashboard</h1>
+    <p>
+      Bid to advance cash against buyer-confirmed invoices. If your bid is accepted you pay the
+      advance up front, and on the invoice's due date escrow repays you that advance plus your fee.
+    </p>
+  </div>
 
-    @if (errorMessage()) {
-      <p class="error-text">{{ errorMessage() }}</p>
-    }
+  @if (errorMessage()) {
+    <div class="alert">{{ errorMessage() }}</div>
+  }
+
+  <div class="card">
+    <h2>Available invoices <span class="subtle">— select one to bid or track your bid</span></h2>
 
     @if (loadingInvoices()) {
-      <p class="muted">Loading...</p>
+      <div class="loading"><span class="spinner"></span> Loading invoices...</div>
     } @else if (invoices().length === 0) {
-      <p class="muted">No confirmed invoices to bid on right now.</p>
+      <div class="empty-state">
+        <strong>Nothing available right now</strong>
+        <span>Invoices appear here once a buyer confirms them.</span>
+      </div>
     } @else {
-      <table>
-        <thead>
-          <tr>
-            <th>Invoice #</th>
-            <th>Face value</th>
-            <th>Due date</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          @for (invoice of invoices(); track invoice.id) {
-            <tr
-              class="clickable"
-              [class.selected]="selectedInvoice()?.id === invoice.id"
-              (click)="selectInvoice(invoice)"
-            >
-              <td>{{ invoice.invoiceNumber }}</td>
-              <td>{{ invoice.currency }} {{ invoice.faceValue }}</td>
-              <td>{{ invoice.dueDate }}</td>
-              <td><span class="badge" [class]="'status-' + invoice.status">{{ invoice.status }}</span></td>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Invoice #</th>
+              <th>Face value</th>
+              <th>Due date</th>
+              <th>Status</th>
+              <th>Doc</th>
             </tr>
-          }
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            @for (invoice of invoices(); track invoice.id) {
+              <tr
+                class="clickable"
+                [class.selected]="selectedInvoice()?.id === invoice.id"
+                (click)="selectInvoice(invoice)"
+              >
+                <td>{{ invoice.invoiceNumber }}</td>
+                <td class="num">{{ invoice.currency }} {{ invoice.faceValue }}</td>
+                <td>{{ invoice.dueDate }}</td>
+                <td><span class="badge" [class]="'status-' + invoice.status">{{ invoice.status }}</span></td>
+                <td class="subtle">{{ invoice.hasDocument ? 'Yes' : '—' }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
     }
   </div>
 
   @if (selectedInvoice(); as invoice) {
     <div class="card">
-      <h2>{{ invoice.invoiceNumber }} — your bid</h2>
+      <h2>Your bid on {{ invoice.invoiceNumber }}</h2>
 
       @if (loadingDetail()) {
-        <p class="muted">Loading...</p>
+        <div class="loading"><span class="spinner"></span> Loading...</div>
       } @else if (myOffer(); as offer) {
-        <table>
-          <thead>
-            <tr>
-              <th>Advance rate</th>
-              <th>Advance amount</th>
-              <th>Fee</th>
-              <th>Status</th>
-              <th>Expires</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>{{ offer.advanceRate }}</td>
-              <td>{{ invoice.currency }} {{ offer.advanceAmount }}</td>
-              <td>{{ invoice.currency }} {{ offer.feeAmount }}</td>
-              <td><span class="badge" [class]="'status-' + offer.status">{{ offer.status }}</span></td>
-              <td>{{ offer.expiresAt | date: 'short' }}</td>
-            </tr>
-          </tbody>
-        </table>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Advance rate</th>
+                <th>You advance</th>
+                <th>Your fee</th>
+                <th>Status</th>
+                <th>Expires</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="num">{{ offer.advanceRate }}</td>
+                <td class="num">{{ invoice.currency }} {{ offer.advanceAmount }}</td>
+                <td class="num">{{ invoice.currency }} {{ offer.feeAmount }}</td>
+                <td><span class="badge" [class]="'status-' + offer.status">{{ offer.status }}</span></td>
+                <td class="subtle">{{ offer.expiresAt | date: 'short' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      } @else if (invoice.status !== 'confirmed') {
+        <div class="empty-state">
+          <strong>Not open for bidding</strong>
+          <span>This invoice is {{ invoice.status }} — bids can only be placed while it's confirmed.</span>
+        </div>
       } @else {
         <form [formGroup]="offerForm" (ngSubmit)="submitOffer()">
           <div class="field-row">
             <div class="form-group">
-              <label for="advanceRate">Advance rate (0–1)</label>
+              <label for="advanceRate">Advance rate</label>
               <input id="advanceRate" type="number" step="0.01" min="0.0001" max="1" formControlName="advanceRate" />
+              <span class="field-hint">Fraction of face value, e.g. 0.9 = 90%</span>
             </div>
             <div class="form-group">
-              <label for="feeAmount">Fee ({{ invoice.currency }})</label>
+              <label for="feeAmount">Your fee ({{ invoice.currency }})</label>
               <input id="feeAmount" type="text" formControlName="feeAmount" placeholder="100.00" />
+              <span class="field-hint">Your return for fronting the cash</span>
             </div>
             <div class="form-group">
-              <label for="expiresAt">Offer expires</label>
+              <label for="expiresAt">Bid expires</label>
               <input id="expiresAt" type="datetime-local" formControlName="expiresAt" />
+              <span class="field-hint">After this, it can't be accepted</span>
             </div>
           </div>
 
@@ -89,41 +114,74 @@
       }
     </div>
 
+    @if (myOffer(); as offer) {
+      <div class="card">
+        <h2>Your return <span class="subtle">— if this bid is accepted</span></h2>
+        <div class="summary">
+          <div class="summary-row">
+            <span class="label">
+              Capital you advance
+              <small>Paid to the SME as soon as they accept</small>
+            </span>
+            <span class="value">− {{ invoice.currency }} {{ offer.advanceAmount }}</span>
+          </div>
+          <div class="summary-row">
+            <span class="label">
+              Repaid from escrow
+              <small>Your advance plus your fee, once the buyer pays on {{ invoice.dueDate }}</small>
+            </span>
+            <span class="value positive">+ {{ invoice.currency }} {{ receivedAtSettlement(offer) }}</span>
+          </div>
+          <div class="summary-row total">
+            <span class="label">
+              Net profit
+              <small>{{ returnOnAdvancePercent(offer) }}% return on capital advanced</small>
+            </span>
+            <span class="value positive">{{ invoice.currency }} {{ offer.feeAmount }}</span>
+          </div>
+        </div>
+      </div>
+    }
+
     <div class="card">
-      <h2>{{ invoice.invoiceNumber }} — supporting document</h2>
+      <h2>Supporting document</h2>
       @if (invoice.hasDocument) {
-        <p class="muted">{{ invoice.documentOriginalName }}</p>
+        <p class="muted" style="margin-top: 0;">
+          Attached: <strong>{{ invoice.documentOriginalName }}</strong>
+        </p>
         <button class="secondary small" [disabled]="downloadingDocument()" (click)="downloadDocument(invoice)">
           {{ downloadingDocument() ? 'Downloading...' : 'Download' }}
         </button>
       } @else {
-        <p class="muted">No document attached to this invoice.</p>
+        <p class="muted" style="margin-top: 0;">No document attached to this invoice.</p>
       }
     </div>
 
     @if (transactions().length > 0) {
       <div class="card">
-        <h2>{{ invoice.invoiceNumber }} — transaction history</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Type</th>
-              <th>Amount</th>
-              <th>Status</th>
-              <th>When</th>
-            </tr>
-          </thead>
-          <tbody>
-            @for (tx of transactions(); track tx.id) {
+        <h2>Payment history</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
               <tr>
-                <td>{{ tx.type }}</td>
-                <td>{{ tx.currency }} {{ tx.amount }}</td>
-                <td><span class="badge" [class]="'status-' + tx.status">{{ tx.status }}</span></td>
-                <td>{{ tx.createdAt | date: 'short' }}</td>
+                <th>Movement</th>
+                <th>Amount</th>
+                <th>Status</th>
+                <th>When</th>
               </tr>
-            }
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              @for (tx of transactions(); track tx.id) {
+                <tr>
+                  <td>{{ tx.type.replaceAll('_', ' ') }}</td>
+                  <td class="num">{{ tx.currency }} {{ tx.amount }}</td>
+                  <td><span class="badge" [class]="'status-' + tx.status">{{ tx.status }}</span></td>
+                  <td class="subtle">{{ tx.createdAt | date: 'short' }}</td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
       </div>
     }
   }

@@ -1,11 +1,12 @@
 import { DatePipe } from '@angular/common';
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { FormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { HttpErrorResponse } from '@angular/common/http';
 import { InvoicesService } from '../../core/services/invoices.service';
 import { OffersService } from '../../core/services/offers.service';
 import { TransactionsService } from '../../core/services/transactions.service';
 import { downloadBlob } from '../../core/utils/download-blob';
+import { addMoney, percentOf, subtractMoney } from '../../core/utils/money';
 import { Invoice } from '../../core/models/invoice.model';
 import { Offer } from '../../core/models/offer.model';
 import { Transaction } from '../../core/models/transaction.model';
@@ -45,8 +46,34 @@ export class SmeDashboard implements OnInit {
   readonly uploadingDocument = signal(false);
   readonly downloadingDocument = signal(false);
 
+  /** The winning bid, once one has been accepted — drives the deal-economics panel. */
+  readonly acceptedOffer = computed(() => this.offers().find((offer) => offer.status === 'accepted') ?? null);
+
   ngOnInit(): void {
     this.loadInvoices();
+  }
+
+  // --- Derived figures. All string arithmetic (integer cents under the hood),
+  // never float math on currency. See core/utils/money.ts.
+
+  /** What the SME is left with at settlement, after the financier takes advance + fee. */
+  residualAtSettlement(offer: Offer, invoice: Invoice): string {
+    return subtractMoney(invoice.faceValue, addMoney(offer.advanceAmount, offer.feeAmount));
+  }
+
+  /** Total the SME ends up with across both payments — i.e. face value minus the fee. */
+  totalToSme(offer: Offer, invoice: Invoice): string {
+    return subtractMoney(invoice.faceValue, offer.feeAmount);
+  }
+
+  /** The financier's fee as a percentage of face value — the real cost of financing. */
+  costOfFinancingPercent(offer: Offer, invoice: Invoice): string {
+    return percentOf(offer.feeAmount, invoice.faceValue);
+  }
+
+  /** What the financier is repaid on the due date: their advance back, plus their fee. */
+  financierReceivesAtSettlement(offer: Offer): string {
+    return addMoney(offer.advanceAmount, offer.feeAmount);
   }
 
   loadInvoices(): void {
