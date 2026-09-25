@@ -62,6 +62,14 @@ export class Invoice extends UuidEntity {
   @Column({ name: 'confirmed_at', type: 'timestamptz', nullable: true })
   confirmedAt: Date | null;
 
+  /** When the buyer actually paid. Compared against dueDate for reliability stats. */
+  @Column({ name: 'paid_at', type: 'timestamptz', nullable: true })
+  paidAt: Date | null;
+
+  /** When the debt was written off to recourse (SME repaid the financier's advance). */
+  @Column({ name: 'defaulted_at', type: 'timestamptz', nullable: true })
+  defaultedAt: Date | null;
+
   /**
    * An optional supporting document (PDF/image) the SME attaches for the
    * buyer/financier to cross-check against — never parsed, never trusted

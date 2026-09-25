@@ -21,6 +21,8 @@ export interface Invoice {
   dueDate: string;
   status: InvoiceStatus;
   confirmedAt: string | null;
+  paidAt: string | null;
+  defaultedAt: string | null;
   createdAt: string;
   hasDocument: boolean;
   documentOriginalName: string | null;

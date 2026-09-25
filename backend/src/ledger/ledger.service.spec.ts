@@ -170,9 +170,40 @@ describe('LedgerService', () => {
           expect.objectContaining({ type: TransactionType.ESCROW_RELEASE_TO_SME, amount: '50.00' }),
         ]),
       );
-      expect(invoicesRepository.updateStatus).toHaveBeenCalledWith('invoice-1', InvoiceStatus.SETTLED, expect.anything());
+      expect(invoicesRepository.updateStatus).toHaveBeenCalledWith(
+        'invoice-1',
+        InvoiceStatus.SETTLED,
+        expect.anything(),
+        expect.objectContaining({ paidAt: expect.any(Date) }),
+      );
       expect(auditLogsRepository.record).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata: { financierAmount: '950.00', smeAmount: '50.00' } }),
+        expect.objectContaining({
+          metadata: { financierAmount: '950.00', smeAmount: '50.00', paidLate: false },
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('still settles an overdue invoice, recording it as a late payment', async () => {
+      invoicesRepository.findByIdForUpdate.mockResolvedValue(
+        makeInvoice({ status: InvoiceStatus.OVERDUE, faceValue: '1000.00' }),
+      );
+      financingOffersRepository.findAcceptedForInvoice.mockResolvedValue({
+        financierId: 'financier-1',
+        advanceAmount: '850.00',
+        feeAmount: '100.00',
+      } as any);
+
+      await service.settleInvoice('invoice-1');
+
+      expect(invoicesRepository.updateStatus).toHaveBeenCalledWith(
+        'invoice-1',
+        InvoiceStatus.SETTLED,
+        expect.anything(),
+        expect.objectContaining({ paidAt: expect.any(Date) }),
+      );
+      expect(auditLogsRepository.record).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ paidLate: true }) }),
         expect.anything(),
       );
     });
@@ -189,6 +220,99 @@ describe('LedgerService', () => {
 
       const types = transactionsRepository.insert.mock.calls.map((call) => call[0].type);
       expect(types).not.toContain(TransactionType.ESCROW_RELEASE_TO_SME);
+    });
+  });
+
+  describe('processArrears', () => {
+    /** A due date `daysAgo` in the past, in the YYYY-MM-DD form the column holds. */
+    function dueDaysAgo(daysAgo: number): string {
+      return new Date(Date.now() - daysAgo * 86_400_000).toISOString().slice(0, 10);
+    }
+
+    it('marks a financed invoice overdue once it is past due', async () => {
+      invoicesRepository.findByIdForUpdate.mockResolvedValue(
+        makeInvoice({ status: InvoiceStatus.FINANCED, dueDate: dueDaysAgo(3) }),
+      );
+
+      await service.processArrears('invoice-1', 30);
+
+      expect(invoicesRepository.updateStatus).toHaveBeenCalledWith(
+        'invoice-1',
+        InvoiceStatus.OVERDUE,
+        expect.anything(),
+      );
+      // Going overdue is a status change only — no money moves yet.
+      expect(transactionsRepository.insert).not.toHaveBeenCalled();
+    });
+
+    it('leaves a financed invoice alone while it is not yet due', async () => {
+      invoicesRepository.findByIdForUpdate.mockResolvedValue(
+        makeInvoice({ status: InvoiceStatus.FINANCED, dueDate: dueDaysAgo(-5) }),
+      );
+
+      await service.processArrears('invoice-1', 30);
+
+      expect(invoicesRepository.updateStatus).not.toHaveBeenCalled();
+    });
+
+    it('leaves an overdue invoice alone while still inside the grace period', async () => {
+      invoicesRepository.findByIdForUpdate.mockResolvedValue(
+        makeInvoice({ status: InvoiceStatus.OVERDUE, dueDate: dueDaysAgo(10) }),
+      );
+
+      await service.processArrears('invoice-1', 30);
+
+      expect(invoicesRepository.updateStatus).not.toHaveBeenCalled();
+      expect(transactionsRepository.insert).not.toHaveBeenCalled();
+    });
+
+    it('defaults an overdue invoice past the grace period, clawing the advance back from the SME', async () => {
+      invoicesRepository.findByIdForUpdate.mockResolvedValue(
+        makeInvoice({ status: InvoiceStatus.OVERDUE, dueDate: dueDaysAgo(45), sellerId: 'sme-1' }),
+      );
+      financingOffersRepository.findAcceptedForInvoice.mockResolvedValue({
+        financierId: 'financier-1',
+        advanceAmount: '9000.00',
+        feeAmount: '200.00',
+      } as any);
+
+      await service.processArrears('invoice-1', 30);
+
+      // Only the advance is recovered — the financier forfeits the fee.
+      expect(transactionsRepository.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: TransactionType.SME_RECOURSE_TO_FINANCIER,
+          amount: '9000.00',
+          idempotencyKey: 'recourse-invoice-1',
+        }),
+        expect.anything(),
+      );
+      const postings = escrowLedgerRepository.insert.mock.calls.map((call) => ({
+        accountId: call[0].accountId,
+        entryType: call[0].entryType,
+        amount: call[0].amount,
+      }));
+      expect(postings).toEqual([
+        { accountId: 'wallet-sme-1', entryType: 'debit', amount: '9000.00' },
+        { accountId: 'wallet-financier-1', entryType: 'credit', amount: '9000.00' },
+      ]);
+      expect(invoicesRepository.updateStatus).toHaveBeenCalledWith(
+        'invoice-1',
+        InvoiceStatus.DEFAULTED,
+        expect.anything(),
+        expect.objectContaining({ defaultedAt: expect.any(Date) }),
+      );
+    });
+
+    it('does nothing for an invoice that is already settled', async () => {
+      invoicesRepository.findByIdForUpdate.mockResolvedValue(
+        makeInvoice({ status: InvoiceStatus.SETTLED, dueDate: dueDaysAgo(99) }),
+      );
+
+      await service.processArrears('invoice-1', 30);
+
+      expect(invoicesRepository.updateStatus).not.toHaveBeenCalled();
+      expect(transactionsRepository.insert).not.toHaveBeenCalled();
     });
   });
 });

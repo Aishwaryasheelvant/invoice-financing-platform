@@ -16,10 +16,10 @@ import { QUEUE_NAMES } from './queue-names';
         defaultJobOptions: { attempts: 5, backoff: { type: 'exponential', delay: 2000 } },
       },
       {
-        name: QUEUE_NAMES.SETTLEMENTS,
+        name: QUEUE_NAMES.ARREARS,
         defaultJobOptions: { attempts: 5, backoff: { type: 'exponential', delay: 2000 } },
       },
-      { name: QUEUE_NAMES.SETTLEMENT_SCAN },
+      { name: QUEUE_NAMES.ARREARS_SCAN },
     ),
   ],
   exports: [BullModule],

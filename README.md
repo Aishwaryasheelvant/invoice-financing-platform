@@ -20,6 +20,12 @@ docker compose up --build
 
 API at `http://localhost:3000`, interactive docs at `http://localhost:3000/api/docs`.
 
+To get a database with something worth looking at — accounts plus invoices in every state, including overdue and defaulted — seed it:
+
+```bash
+cd backend && npm run seed
+```
+
 For local development (fast reload, running the frontend, running tests), see:
 
 - **[backend/README.md](backend/README.md)** — architecture, database schema, concurrency safeguards, environment variables, testing.

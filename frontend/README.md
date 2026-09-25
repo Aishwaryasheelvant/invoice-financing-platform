@@ -17,12 +17,24 @@ If you serve on a different port, update `CORS_ORIGIN` in the backend's `.env` t
 
 ## What to try
 
+**Quickest path:** run `npm run seed` in `backend/` first. That populates four accounts (password `DemoPass123`) and invoices in every state, so each dashboard has something on it immediately:
+
+- `sme@demo.local` — created every invoice; see competing bids, accept one, view deal economics and payouts
+- `buyer@demo.local` — a reliable payer; confirm a pending invoice, pay a financed one
+- `buyer-late@demo.local` — has a default on record; compare their reliability panel against the above
+- `financier@demo.local` — holds the winning bids; see returns and buyer payment records
+
+**Or build it up by hand**, which exercises the full flow:
+
 1. **Register** three accounts — one each as SME, buyer, financier (`/register`).
 2. Log in as the **buyer** first, and copy their user ID shown on the dashboard (there's no user directory in the API, so this is how an SME finds out who to bill).
 3. Log in as the **SME**, create an invoice naming that buyer ID.
 4. Log in as the **buyer**, confirm the invoice.
 5. Log in as the **financier**, it should now appear as open for bidding — submit an offer.
 6. Log in as the **SME**, accept the offer. A transaction (the payout) appears shortly after — it's processed by a background job, not synchronously.
+7. Log in as the **buyer** and hit **Pay now**. Escrow collects and immediately splits the money: the financier gets their advance + fee back, the SME gets the residual.
+
+Tip: use a separate browser window (one normal, two incognito) per role so all three stay logged in at once, instead of logging out and back in between every step.
 
 ## Structure
 
@@ -37,9 +49,11 @@ src/app/
     guards/          authGuard (must be logged in) and roleGuard (must have the right role)
   pages/
     login/, register/               public
-    sme-dashboard/                  create invoices, review + accept offers, view payouts
-    buyer-dashboard/                confirm invoices
-    financier-dashboard/            browse confirmed invoices, bid, track your own offer
+    sme-dashboard/                  create invoices, review + accept offers, deal economics, payouts
+    buyer-dashboard/                confirm invoices, pay them when due
+    financier-dashboard/            browse invoices, bid, track returns and buyer reliability
+  shared/
+    buyer-reliability-card/         buyer payment record, used by both SME and financier views
 ```
 
 Routes are lazy-loaded (`loadComponent`) and guarded in `app.routes.ts`.

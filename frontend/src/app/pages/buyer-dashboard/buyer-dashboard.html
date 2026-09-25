@@ -2,8 +2,9 @@
   <div class="page-header">
     <h1>Buyer dashboard</h1>
     <p>
-      Confirm invoices your suppliers raise against you. Confirming is what makes an invoice
-      financeable — it's your acknowledgement that the debt is real and you'll pay it on the due date.
+      Confirm invoices your suppliers raise against you, then pay them when due. Confirming is what
+      makes an invoice financeable — it's your acknowledgement that the debt is real. Paying late is
+      still accepted, but it's recorded against your payment history.
     </p>
   </div>
 
@@ -67,6 +68,12 @@
                     <button class="small" [disabled]="confirmingId() === invoice.id" (click)="confirm(invoice)">
                       {{ confirmingId() === invoice.id ? 'Confirming...' : 'Confirm' }}
                     </button>
+                  } @else if (isPayable(invoice)) {
+                    <button class="small" [disabled]="payingId() === invoice.id" (click)="pay(invoice)">
+                      {{ payingId() === invoice.id ? 'Paying...' : 'Pay now' }}
+                    </button>
+                  } @else if (invoice.status === 'settled' && invoice.paidAt) {
+                    <span class="subtle">Paid {{ invoice.paidAt | date: 'mediumDate' }}</span>
                   }
                 </td>
               </tr>

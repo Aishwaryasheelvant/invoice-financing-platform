@@ -1,19 +1,25 @@
 export const QUEUE_NAMES = {
   PAYOUTS: 'payouts',
-  SETTLEMENTS: 'settlements',
-  SETTLEMENT_SCAN: 'settlement-scan',
+  /**
+   * Chasing invoices that haven't been paid on time. Named for arrears
+   * rather than settlement because settlement is no longer scheduled work
+   * — it's triggered by the buyer actually paying. What the scheduler
+   * handles now is the *absence* of payment.
+   */
+  ARREARS: 'arrears',
+  ARREARS_SCAN: 'arrears-scan',
 } as const;
 
 export const JOB_NAMES = {
   PROCESS_PAYOUT: 'process-payout',
-  SETTLE_INVOICE: 'settle-invoice',
-  SCAN_DUE_INVOICES: 'scan-due-invoices',
+  PROCESS_ARREARS: 'process-arrears',
+  SCAN_ARREARS: 'scan-arrears',
 } as const;
 
 export interface ProcessPayoutJobData {
   offerId: string;
 }
 
-export interface SettleInvoiceJobData {
+export interface ProcessArrearsJobData {
   invoiceId: string;
 }

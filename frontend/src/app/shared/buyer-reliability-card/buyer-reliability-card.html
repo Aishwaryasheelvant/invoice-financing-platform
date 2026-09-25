@@ -1,0 +1,67 @@
+<div class="card">
+  <h2>Buyer payment record</h2>
+
+  @if (loading()) {
+    <div class="loading"><span class="spinner"></span> Loading payment history...</div>
+  } @else if (unavailable()) {
+    <p class="muted" style="margin: 0;">Payment history isn't available for this invoice.</p>
+  } @else if (reliability(); as record) {
+    <div class="summary">
+      <div class="summary-row">
+        <span class="label">
+          {{ record.companyName }}
+          <small>
+            @if (record.settledCount === 0) {
+              Nothing has come due from this buyer yet
+            } @else {
+              Based on {{ record.settledCount }} paid invoice{{ record.settledCount === 1 ? '' : 's' }}
+            }
+          </small>
+        </span>
+        <span class="value">
+          <span class="badge" [class]="ratingBadgeClass()">{{ ratingLabel() }}</span>
+        </span>
+      </div>
+
+      @if (record.settledCount > 0) {
+        <div class="summary-row">
+          <span class="label">Paid on time</span>
+          <span class="value">{{ record.onTimePercentage }}% ({{ record.onTimeCount }} of {{ record.settledCount }})</span>
+        </div>
+        <div class="summary-row">
+          <span class="label">
+            Average delay
+            <small>Across all paid invoices; paying early counts as on time</small>
+          </span>
+          <span class="value">{{ record.avgDaysLate }} day{{ record.avgDaysLate === 1 ? '' : 's' }}</span>
+        </div>
+        @if (record.maxDaysLate > 0) {
+          <div class="summary-row">
+            <span class="label">Worst delay on record</span>
+            <span class="value">{{ record.maxDaysLate }} days</span>
+          </div>
+        }
+      }
+
+      @if (record.currentlyOverdueCount > 0) {
+        <div class="summary-row">
+          <span class="label">
+            Currently overdue
+            <small>Unpaid and past the due date right now</small>
+          </span>
+          <span class="value">{{ record.currentlyOverdueCount }}</span>
+        </div>
+      }
+
+      @if (record.defaultedCount > 0) {
+        <div class="summary-row">
+          <span class="label">
+            Defaulted
+            <small>Written off — the advance was recovered from the SME under recourse</small>
+          </span>
+          <span class="value">{{ record.defaultedCount }}</span>
+        </div>
+      }
+    </div>
+  }
+</div>

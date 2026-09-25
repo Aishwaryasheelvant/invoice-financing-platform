@@ -2,7 +2,7 @@ import { getQueueToken } from '@nestjs/bullmq';
 import { INestApplication } from '@nestjs/common';
 import { Queue } from 'bullmq';
 import request from 'supertest';
-import { JOB_NAMES, QUEUE_NAMES, SettleInvoiceJobData } from '../src/jobs/queues/queue-names';
+import { JOB_NAMES, ProcessArrearsJobData, QUEUE_NAMES } from '../src/jobs/queues/queue-names';
 import { createTestApp, waitUntil } from './utils/app.util';
 import { registerAndLogin, TestSession } from './utils/auth.util';
 import { closeDataSource, queryRaw, resetDatabase } from './utils/database.util';
@@ -123,10 +123,10 @@ describe('Financing offers (e2e)', () => {
     15_000,
   );
 
-  it('settles a financed invoice through the real settlement queue/worker, splitting funds correctly', async () => {
+  async function financeInvoice(advanceRate: number, feeAmount: string): Promise<string> {
     const offer = await submitOffer(financierA, {
-      advanceRate: 0.85,
-      feeAmount: '100.00',
+      advanceRate,
+      feeAmount,
       expiresAt: '2099-01-01T00:00:00.000Z',
     }).expect(201);
     await request(app.getHttpServer())
@@ -134,23 +134,22 @@ describe('Financing offers (e2e)', () => {
       .set('Authorization', `Bearer ${sme.accessToken}`)
       .expect(200);
 
-    // Wait for the payout job (financier -> SME advance) to land first.
+    // The payout (financier -> SME advance) runs as a background job.
     await waitUntil(async () => {
       const rows = await queryRaw(`SELECT 1 FROM transactions WHERE idempotency_key = $1`, [`payout-${offer.body.id}`]);
       return rows.length === 1;
     });
+    return offer.body.id;
+  }
 
-    // Drive settlement directly through the real queue + worker, instead
-    // of waiting for the daily cron tick — this still exercises the
-    // actual SettlementProcessor and LedgerService.settleInvoice, just
-    // without depending on wall-clock cron timing in a test.
-    const settlementsQueue = app.get<Queue<SettleInvoiceJobData>>(getQueueToken(QUEUE_NAMES.SETTLEMENTS));
-    await settlementsQueue.add(JOB_NAMES.SETTLE_INVOICE, { invoiceId }, { jobId: `settle-${invoiceId}` });
+  it('settles when the buyer pays, splitting the funds correctly', async () => {
+    await financeInvoice(0.85, '100.00');
 
-    await waitUntil(async () => {
-      const rows = await queryRaw<{ status: string }>(`SELECT status FROM invoices WHERE id = $1`, [invoiceId]);
-      return rows[0]?.status === 'settled';
-    });
+    await request(app.getHttpServer())
+      .post(`/invoices/${invoiceId}/pay`)
+      .set('Authorization', `Bearer ${buyer.accessToken}`)
+      .expect(200)
+      .expect((res) => expect(res.body.status).toBe('settled'));
 
     const legs = await queryRaw<{ type: string; amount: string }>(
       `SELECT type, amount FROM transactions WHERE invoice_id = $1 ORDER BY created_at`,
@@ -169,5 +168,125 @@ describe('Financing offers (e2e)', () => {
       [invoiceId],
     );
     expect(Number(escrowBalance[0].balance)).toBe(0); // escrow must drain to exactly zero
+  });
+
+  it('refuses payment from anyone other than the named buyer', async () => {
+    await financeInvoice(0.9, '50.00');
+
+    await request(app.getHttpServer())
+      .post(`/invoices/${invoiceId}/pay`)
+      .set('Authorization', `Bearer ${sme.accessToken}`)
+      .expect(403);
+    await request(app.getHttpServer())
+      .post(`/invoices/${invoiceId}/pay`)
+      .set('Authorization', `Bearer ${financierA.accessToken}`)
+      .expect(403);
+  });
+
+  it('is idempotent: paying twice does not double-settle', async () => {
+    await financeInvoice(0.9, '50.00');
+
+    await request(app.getHttpServer())
+      .post(`/invoices/${invoiceId}/pay`)
+      .set('Authorization', `Bearer ${buyer.accessToken}`)
+      .expect(200);
+    // Second attempt is rejected by the state check rather than producing another set of legs.
+    await request(app.getHttpServer())
+      .post(`/invoices/${invoiceId}/pay`)
+      .set('Authorization', `Bearer ${buyer.accessToken}`)
+      .expect(409);
+
+    const legs = await queryRaw<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM transactions WHERE invoice_id = $1 AND type = 'buyer_payment_to_escrow'`,
+      [invoiceId],
+    );
+    expect(Number(legs[0].count)).toBe(1);
+  });
+
+  describe('arrears', () => {
+    /**
+     * Backdates the invoice so it reads as past due without waiting in real
+     * time. The issue date moves with it: the schema enforces
+     * `due_date > issue_date`, so shifting only the due date far enough back
+     * would violate that check constraint.
+     */
+    async function backdateDueDate(daysAgo: number): Promise<void> {
+      await queryRaw(
+        `UPDATE invoices
+         SET due_date = CURRENT_DATE - $2::int,
+             issue_date = CURRENT_DATE - ($2::int + 30)
+         WHERE id = $1`,
+        [invoiceId, daysAgo],
+      );
+    }
+
+    function runArrearsReview(): Promise<unknown> {
+      const arrearsQueue = app.get<Queue<ProcessArrearsJobData>>(getQueueToken(QUEUE_NAMES.ARREARS));
+      return arrearsQueue.add(JOB_NAMES.PROCESS_ARREARS, { invoiceId }, { jobId: `arrears-${invoiceId}-${Date.now()}` });
+    }
+
+    it('marks an unpaid past-due invoice as overdue, then defaults it with recourse against the SME', async () => {
+      const offerId = await financeInvoice(0.9, '200.00'); // advance 9000
+      await backdateDueDate(1);
+
+      await runArrearsReview();
+      await waitUntil(async () => {
+        const rows = await queryRaw<{ status: string }>(`SELECT status FROM invoices WHERE id = $1`, [invoiceId]);
+        return rows[0]?.status === 'overdue';
+      });
+
+      // Push it well past the grace period, then review again.
+      await backdateDueDate(400);
+      await runArrearsReview();
+      await waitUntil(async () => {
+        const rows = await queryRaw<{ status: string }>(`SELECT status FROM invoices WHERE id = $1`, [invoiceId]);
+        return rows[0]?.status === 'defaulted';
+      });
+
+      // Recourse: the SME repays the advance to the financier — capital back, fee forfeited.
+      const recourse = await queryRaw<{ amount: string }>(
+        `SELECT amount FROM transactions WHERE invoice_id = $1 AND type = 'sme_recourse_to_financier'`,
+        [invoiceId],
+      );
+      expect(recourse).toHaveLength(1);
+      expect(recourse[0].amount).toBe('9000.00');
+      expect(offerId).toBeTruthy();
+
+      // Every transaction's ledger postings must still balance to zero.
+      const unbalanced = await queryRaw<{ transaction_id: string }>(
+        `SELECT transaction_id FROM escrow_ledger WHERE invoice_id = $1
+         GROUP BY transaction_id
+         HAVING SUM(CASE WHEN entry_type = 'credit' THEN amount ELSE -amount END) <> 0`,
+        [invoiceId],
+      );
+      expect(unbalanced).toEqual([]);
+    }, 20_000);
+
+    it('still lets the buyer pay late, settling an overdue invoice', async () => {
+      await financeInvoice(0.9, '100.00');
+      await backdateDueDate(3);
+
+      await runArrearsReview();
+      await waitUntil(async () => {
+        const rows = await queryRaw<{ status: string }>(`SELECT status FROM invoices WHERE id = $1`, [invoiceId]);
+        return rows[0]?.status === 'overdue';
+      });
+
+      await request(app.getHttpServer())
+        .post(`/invoices/${invoiceId}/pay`)
+        .set('Authorization', `Bearer ${buyer.accessToken}`)
+        .expect(200)
+        .expect((res) => expect(res.body.status).toBe('settled'));
+
+      // The lateness is recorded, which is what buyer reliability is built from.
+      const reliability = await request(app.getHttpServer())
+        .get(`/buyers/${buyer.userId}/reliability`)
+        .set('Authorization', `Bearer ${financierA.accessToken}`)
+        .expect(200);
+      expect(reliability.body.settledCount).toBe(1);
+      expect(reliability.body.lateCount).toBe(1);
+      expect(reliability.body.avgDaysLate).toBeGreaterThanOrEqual(3);
+      expect(reliability.body.rating).toBe('slightly_late');
+    }, 20_000);
   });
 });

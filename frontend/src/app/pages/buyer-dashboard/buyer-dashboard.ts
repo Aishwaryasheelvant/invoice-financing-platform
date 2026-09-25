@@ -1,3 +1,4 @@
+import { DatePipe } from '@angular/common';
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { AuthService } from '../../core/services/auth.service';
 import { InvoicesService } from '../../core/services/invoices.service';
@@ -6,7 +7,7 @@ import { Invoice } from '../../core/models/invoice.model';
 
 @Component({
   selector: 'app-buyer-dashboard',
-  imports: [],
+  imports: [DatePipe],
   templateUrl: './buyer-dashboard.html',
   styleUrl: './buyer-dashboard.css',
 })
@@ -17,8 +18,14 @@ export class BuyerDashboard implements OnInit {
   readonly invoices = signal<Invoice[]>([]);
   readonly loading = signal(false);
   readonly confirmingId = signal<string | null>(null);
+  readonly payingId = signal<string | null>(null);
   readonly downloadingId = signal<string | null>(null);
   readonly errorMessage = signal<string | null>(null);
+
+  /** Financed or already overdue — a late payment still settles the invoice. */
+  isPayable(invoice: Invoice): boolean {
+    return invoice.status === 'financed' || invoice.status === 'overdue';
+  }
 
   ngOnInit(): void {
     this.loadInvoices();
@@ -48,6 +55,21 @@ export class BuyerDashboard implements OnInit {
       error: (err) => {
         this.confirmingId.set(null);
         this.errorMessage.set(err.error?.message ?? 'Could not confirm invoice');
+      },
+    });
+  }
+
+  pay(invoice: Invoice): void {
+    this.payingId.set(invoice.id);
+    this.errorMessage.set(null);
+    this.invoicesService.pay(invoice.id).subscribe({
+      next: () => {
+        this.payingId.set(null);
+        this.loadInvoices();
+      },
+      error: (err) => {
+        this.payingId.set(null);
+        this.errorMessage.set(err.error?.message ?? 'Could not pay this invoice');
       },
     });
   }

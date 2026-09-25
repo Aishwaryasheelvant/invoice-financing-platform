@@ -1,6 +1,6 @@
 # Invoice Financing Platform
 
-A backend for a platform where SMEs convert buyer-confirmed invoices into immediate cash via financier bidding. Buyers confirm invoices, financiers bid to advance payment at a discount, SMEs accept an offer and get paid immediately, and on the invoice's due date the platform settles the invoice through an internal escrow ledger — splitting the buyer's payment between the financier (their advance + fee) and the SME (the residual).
+A backend for a platform where SMEs convert buyer-confirmed invoices into immediate cash via financier bidding. Buyers confirm invoices, financiers bid to advance payment at a discount, SMEs accept an offer and get paid immediately. When the buyer pays, an internal escrow ledger splits the money between the financier (their advance + fee) and the SME (the residual). When the buyer *doesn't* pay, a scheduled scan flags the invoice overdue and eventually defaults it, recovering the advance from the SME under a **recourse** agreement.
 
 Built as a backend-focused portfolio project, prioritizing correctness, concurrency safety, and real-world backend engineering practice over speed of delivery.
 
@@ -20,8 +20,10 @@ Built as a backend-focused portfolio project, prioritizing correctness, concurre
 
 - [Architecture](#architecture)
 - [Database schema](#database-schema)
+- [Invoice lifecycle](#invoice-lifecycle)
 - [Concurrency & correctness safeguards](#concurrency--correctness-safeguards)
 - [Getting started](#getting-started)
+- [Known limitations](#known-limitations)
 - [Environment variables](#environment-variables)
 - [API documentation](#api-documentation)
 - [Testing](#testing)
@@ -38,7 +40,7 @@ AppModule
 ├── InvoicesModule        invoice CRUD + the buyer-confirmation state machine
 ├── FinancingOffersModule financier bidding + the offer-acceptance flow
 ├── LedgerModule          the ONLY module that writes accounts/transactions/escrow_ledger
-├── JobsModule            BullMQ processors (payout, settlement, settlement scan)
+├── JobsModule            BullMQ processors (payout, arrears scan, overdue/default)
 └── AuditModule           generic append-only audit trail, shared by the above
 ```
 
@@ -70,9 +72,25 @@ sequenceDiagram
     API->>DB: offer -> accepted, others -> rejected, invoice -> financed
     API-->>Q: enqueue payout job (after commit)
     Q->>DB: financier wallet debit, SME wallet credit
-    Note over Q,DB: on due date — scheduled scan
-    Q->>DB: buyer payment -> escrow, escrow -> financier, escrow -> SME
-    DB-->>API: invoice -> settled
+    Buyer->>API: POST /invoices/:id/pay
+    API->>DB: buyer payment -> escrow, escrow -> financier, escrow -> SME
+    DB-->>API: invoice -> settled (paid_at recorded)
+```
+
+If the buyer never pays, the scheduled arrears scan takes over instead:
+
+```mermaid
+sequenceDiagram
+    participant Cron as Arrears scan (daily)
+    participant Q as BullMQ / Redis
+    participant DB as PostgreSQL
+
+    Cron->>DB: find financed-but-unpaid past due, and existing overdue
+    Cron-->>Q: one job per invoice
+    Q->>DB: SELECT invoice FOR UPDATE
+    Note over Q,DB: financed + past due -> overdue
+    Note over Q,DB: overdue + past grace period -> defaulted
+    Q->>DB: recourse: SME wallet debit, financier wallet credit (advance only)
 ```
 
 ## Database schema
@@ -107,6 +125,8 @@ erDiagram
         date issue_date
         date due_date
         enum status
+        timestamptz paid_at "when the buyer actually paid"
+        timestamptz defaulted_at "when written off to recourse"
         int version "optimistic lock"
     }
     FINANCING_OFFERS {
@@ -171,6 +191,38 @@ Notable schema decisions (each is a deliberate tradeoff, not an oversight — se
 - **`transactions.idempotency_key` is unique** — the mechanism that makes retried/redelivered BullMQ jobs and payment webhooks safe to replay.
 - **No `financed_offer_id` column on `invoices`** — that would create a circular FK with `financing_offers`. The accepted offer is looked up via the partial unique index instead.
 
+## Invoice lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending_buyer_confirmation: SME raises it
+    pending_buyer_confirmation --> confirmed: buyer confirms
+    confirmed --> financed: SME accepts an offer
+    financed --> settled: buyer pays
+    financed --> overdue: past due, unpaid
+    overdue --> settled: buyer pays late
+    overdue --> defaulted: past grace period
+    pending_buyer_confirmation --> cancelled
+    confirmed --> cancelled
+```
+
+Every transition is enumerated in `src/invoices/invoice-state-machine.ts`; anything not listed (skipping a step, re-confirming, leaving a terminal state) is rejected with a `409`.
+
+### Who bears the loss on a default
+
+This is a business-model decision, not a technical one, and the two real-world answers give different systems:
+
+- **Recourse** — the SME is liable. If the buyer defaults, the SME repays the financier's advance. Cheaper for the SME because the financier takes less risk.
+- **Non-recourse** — the financier absorbs the loss, and charges higher fees to compensate.
+
+**This implementation is recourse**, which is the more common arrangement for small-business factoring. On default the ledger debits the SME's wallet and credits the financier's for the **advance only** — the financier recovers their capital but forfeits the fee, since the deal never completed.
+
+Worth noting *why* this had to be decided explicitly rather than hand-waved: double-entry means the loss can't quietly evaporate. Every transaction's debits must equal its credits, so the system is forced to name the account the money comes out of. That constraint is the whole point of keeping a real ledger.
+
+### Buyer reliability
+
+Because `paid_at` is recorded against `due_date`, the system can report how a buyer actually behaves — on-time percentage, average and worst delay, current arrears, prior defaults — via `GET /buyers/:id/reliability`, plus a derived rating (`reliable`, `slightly_late`, `habitually_late`, `has_defaulted`; a prior default outranks any amount of good history). Financiers use it to price risk; SMEs use it to decide whether to keep extending credit terms. It's computed as a single SQL aggregate rather than by loading invoices into memory, since it grows with the buyer's history.
+
 ## Concurrency & correctness safeguards
 
 The one invariant that matters most in this system: **exactly one financier offer can ever be accepted per invoice.** It's enforced three times, independently:
@@ -220,12 +272,35 @@ cd ..  && docker compose up -d postgres redis && cd backend
 cp .env.example .env
 npm install
 npm run migration:run
+npm run seed          # optional, but recommended — see below
 npm run start:dev
 ```
 
 ### Option C — fully local (Postgres/Redis installed natively)
 
 Same as Option B, but point `backend/.env` at your local Postgres/Redis instead of starting the compose services.
+
+### Seeding demo data
+
+An empty database means every screen is blank, and building up something worth looking at by hand takes about ten minutes of registering accounts and switching roles. `npm run seed` does it in one command:
+
+```bash
+npm run seed              # skips if demo data already exists
+npm run seed -- --reset   # wipes ALL data first, then rebuilds
+```
+
+It creates four accounts (all with password `DemoPass123`) and seven invoices covering **every** state — awaiting confirmation, open with competing bids, financed, settled on time, settled late, overdue, and defaulted-with-recourse:
+
+| Account | Role | Notes |
+|---|---|---|
+| `sme@demo.local` | SME | Northwind Supplies — raised all seven invoices |
+| `buyer@demo.local` | Buyer | Gran Retail Group — pays on time (`reliable`) |
+| `buyer-late@demo.local` | Buyer | Slowpay Industries — late payer with a default on record |
+| `financier@demo.local` | Financier | Harbour Capital — holds every winning bid |
+
+Two buyers exist specifically so the reliability endpoint has contrasting histories to report.
+
+The seed runs through the **real services** (a NestJS standalone application context — the DI container without the HTTP server), not raw `INSERT`s: passwords are hashed by the same code path as registration, the state machine is respected, and the ledger is written by `LedgerService`. Seeded data is therefore data the application could genuinely have produced. It refuses to run when `NODE_ENV=production`, since the credentials above are committed to this repo.
 
 ## Environment variables
 
@@ -237,9 +312,21 @@ See `.env.example` for the full list with defaults. The important ones:
 | `REDIS_HOST` / `REDIS_PORT` | Redis connection (BullMQ) |
 | `JWT_ACCESS_SECRET` / `JWT_ACCESS_EXPIRES_IN_SECONDS` | Access token signing + lifetime |
 | `JWT_REFRESH_SECRET` / `JWT_REFRESH_EXPIRES_IN_SECONDS` | Refresh token signing + lifetime |
-| `SETTLEMENT_SCAN_CRON` | Cron pattern for the daily due-date settlement scan |
+| `ARREARS_SCAN_CRON` | Cron pattern for the daily arrears scan (flags overdue, then defaults) |
+| `DEFAULT_GRACE_PERIOD_DAYS` | Days past due before an unpaid invoice defaults and recourse kicks in |
+| `CORS_ORIGIN` | Comma-separated browser origins allowed to call the API |
 | `THROTTLE_TTL_MS` / `THROTTLE_LIMIT` | Global rate limit (auth endpoints set a tighter per-route limit) |
 | `SWAGGER_ENABLED` | Set to `false` to disable the `/api/docs` UI |
+
+## Known limitations
+
+Deliberate scope boundaries rather than oversights — named here because a reviewer will spot them, and pretending otherwise would be worse than owning them:
+
+- **Buyer payment is simulated.** There's no payment gateway. `POST /invoices/:id/pay` records the money landing in escrow and splits it, but no real funds move. The other side of that entry books to a platform *clearing* account, which is what keeps the double-entry invariant intact for money notionally arriving from outside the system. With a real gateway this endpoint would split in two: collect a payment intent, then settle on the provider's webhook.
+- **Financier wallets can go negative.** There's no deposit/funding flow, so no sufficient-funds check before a payout. In a real system a financier would pre-fund their platform balance and the payout would be rejected without it.
+- **Defaults are automatic, not reviewed.** Once past the grace period the scan defaults the invoice and claws back the advance without human sign-off. Realistically a person decides to write off a debt; that needs an admin role and workflow this project doesn't have.
+- **Single currency in practice.** Every table carries a currency column and amounts never mix currencies, but there's no FX handling, so cross-currency financing isn't supported.
+- **No email/notifications.** Registration is immediate with no verification step, and nobody is notified when their invoice is confirmed, bid on, or paid.
 
 ## API documentation
 

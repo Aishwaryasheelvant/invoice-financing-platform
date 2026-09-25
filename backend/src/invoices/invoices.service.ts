@@ -7,6 +7,7 @@ import { AuthenticatedUser } from '../common/interfaces/authenticated-user.inter
 import { FinancingOffer } from '../financing-offers/entities/financing-offer.entity';
 import { UserRole } from '../users/enums/user-role.enum';
 import { UsersRepository } from '../users/repositories/users.repository';
+import { BuyerReliabilityRating, BuyerReliabilityResponseDto } from './dto/buyer-reliability-response.dto';
 import { CreateInvoiceDto } from './dto/create-invoice.dto';
 import { InvoiceResponseDto } from './dto/invoice-response.dto';
 import { Invoice } from './entities/invoice.entity';
@@ -200,6 +201,43 @@ export class InvoicesService {
       path: join(INVOICE_DOCUMENTS_DIR, invoice.documentStorageKey),
       originalName: invoice.documentOriginalName ?? 'document',
       mimeType: invoice.documentMimeType ?? 'application/octet-stream',
+    };
+  }
+
+  /**
+   * Thresholds are a deliberate judgement call, not a formula: a couple of
+   * days late is normal commercial friction, ten-plus days is a pattern
+   * worth pricing for, and a prior default outranks any amount of
+   * otherwise-good history.
+   */
+  async getBuyerReliability(buyerId: string): Promise<BuyerReliabilityResponseDto> {
+    const buyer = await this.usersRepository.findById(buyerId);
+    if (!buyer || buyer.role !== UserRole.BUYER) {
+      throw new NotFoundException('Buyer not found');
+    }
+
+    const stats = await this.invoicesRepository.getBuyerPaymentStats(buyerId);
+
+    let rating: BuyerReliabilityRating;
+    if (stats.defaultedCount > 0) {
+      rating = BuyerReliabilityRating.HAS_DEFAULTED;
+    } else if (stats.settledCount === 0) {
+      rating = BuyerReliabilityRating.NO_HISTORY;
+    } else if (stats.avgDaysLate <= 2) {
+      rating = BuyerReliabilityRating.RELIABLE;
+    } else if (stats.avgDaysLate <= 10) {
+      rating = BuyerReliabilityRating.SLIGHTLY_LATE;
+    } else {
+      rating = BuyerReliabilityRating.HABITUALLY_LATE;
+    }
+
+    return {
+      buyerId,
+      companyName: buyer.companyName,
+      rating,
+      ...stats,
+      onTimePercentage:
+        stats.settledCount === 0 ? 0 : Math.round((stats.onTimeCount / stats.settledCount) * 100),
     };
   }
 

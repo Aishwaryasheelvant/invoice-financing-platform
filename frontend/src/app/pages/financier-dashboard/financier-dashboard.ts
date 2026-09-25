@@ -5,6 +5,7 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { InvoicesService } from '../../core/services/invoices.service';
 import { OffersService } from '../../core/services/offers.service';
 import { TransactionsService } from '../../core/services/transactions.service';
+import { BuyerReliabilityCard } from '../../shared/buyer-reliability-card/buyer-reliability-card';
 import { downloadBlob } from '../../core/utils/download-blob';
 import { addMoney, percentOf } from '../../core/utils/money';
 import { Invoice } from '../../core/models/invoice.model';
@@ -13,7 +14,7 @@ import { Transaction } from '../../core/models/transaction.model';
 
 @Component({
   selector: 'app-financier-dashboard',
-  imports: [ReactiveFormsModule, DatePipe],
+  imports: [ReactiveFormsModule, DatePipe, BuyerReliabilityCard],
   templateUrl: './financier-dashboard.html',
   styleUrl: './financier-dashboard.css',
 })

@@ -25,6 +25,11 @@ export class InvoicesService {
     return this.http.post<Invoice>(`${API_BASE_URL}/invoices/${id}/confirm`, {});
   }
 
+  /** Buyer settles the invoice: escrow collects and immediately splits to financier + SME. */
+  pay(id: string): Observable<Invoice> {
+    return this.http.post<Invoice>(`${API_BASE_URL}/invoices/${id}/pay`, {});
+  }
+
   uploadDocument(id: string, file: File): Observable<Invoice> {
     const formData = new FormData();
     formData.append('file', file);

@@ -6,3 +6,5 @@ dist
 .DS_Store
 coverage
 backend/uploads
+dist-test-check
+*.tsbuildinfo

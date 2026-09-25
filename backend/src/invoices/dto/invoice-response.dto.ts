@@ -33,6 +33,12 @@ export class InvoiceResponseDto {
   @ApiProperty({ nullable: true })
   confirmedAt: Date | null;
 
+  @ApiProperty({ nullable: true, description: 'When the buyer actually paid' })
+  paidAt: Date | null;
+
+  @ApiProperty({ nullable: true, description: 'When the debt was written off to recourse' })
+  defaultedAt: Date | null;
+
   @ApiProperty()
   createdAt: Date;
 
@@ -54,6 +60,8 @@ export class InvoiceResponseDto {
     dto.dueDate = invoice.dueDate;
     dto.status = invoice.status;
     dto.confirmedAt = invoice.confirmedAt;
+    dto.paidAt = invoice.paidAt;
+    dto.defaultedAt = invoice.defaultedAt;
     dto.createdAt = invoice.createdAt;
     dto.hasDocument = invoice.documentStorageKey !== null;
     dto.documentOriginalName = invoice.documentOriginalName;

@@ -4,6 +4,7 @@ import { AuditLogsRepository } from '../audit/repositories/audit-logs.repository
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { UserRole } from '../users/enums/user-role.enum';
 import { UsersRepository } from '../users/repositories/users.repository';
+import { BuyerReliabilityRating } from './dto/buyer-reliability-response.dto';
 import { Invoice } from './entities/invoice.entity';
 import { InvoiceStatus } from './enums/invoice-status.enum';
 import { InvoicesService } from './invoices.service';
@@ -52,7 +53,8 @@ describe('InvoicesService', () => {
       create: jest.fn(),
       updateStatus: jest.fn(),
       updateDocument: jest.fn(),
-      findDueForSettlement: jest.fn(),
+      getBuyerPaymentStats: jest.fn(),
+      findNeedingArrearsReview: jest.fn(),
     } as unknown as jest.Mocked<InvoicesRepository>;
 
     // Defaults to "yes, a real buyer" so existing tests that don't care
@@ -280,6 +282,86 @@ describe('InvoicesService', () => {
       await expect(
         service.getById('invoice-1', makeUser({ id: 'financier-1', role: UserRole.FINANCIER })),
       ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('getBuyerReliability', () => {
+    const noHistory = {
+      settledCount: 0,
+      onTimeCount: 0,
+      lateCount: 0,
+      avgDaysLate: 0,
+      maxDaysLate: 0,
+      currentlyOverdueCount: 0,
+      defaultedCount: 0,
+    };
+
+    beforeEach(() => {
+      usersRepository.findById.mockResolvedValue({
+        id: 'buyer-1',
+        role: UserRole.BUYER,
+        companyName: 'Buyer Co',
+      } as any);
+    });
+
+    it('rejects an id that is not an existing buyer', async () => {
+      usersRepository.findById.mockResolvedValue(null);
+      await expect(service.getBuyerReliability('nope')).rejects.toThrow(NotFoundException);
+    });
+
+    it('reports no_history when nothing has been paid yet', async () => {
+      invoicesRepository.getBuyerPaymentStats.mockResolvedValue({ ...noHistory });
+      const result = await service.getBuyerReliability('buyer-1');
+      expect(result.rating).toBe(BuyerReliabilityRating.NO_HISTORY);
+      expect(result.onTimePercentage).toBe(0);
+    });
+
+    it('rates a consistently prompt payer as reliable', async () => {
+      invoicesRepository.getBuyerPaymentStats.mockResolvedValue({
+        ...noHistory,
+        settledCount: 5,
+        onTimeCount: 5,
+        avgDaysLate: 0,
+      });
+      const result = await service.getBuyerReliability('buyer-1');
+      expect(result.rating).toBe(BuyerReliabilityRating.RELIABLE);
+      expect(result.onTimePercentage).toBe(100);
+    });
+
+    it('rates a mildly late payer as slightly_late', async () => {
+      invoicesRepository.getBuyerPaymentStats.mockResolvedValue({
+        ...noHistory,
+        settledCount: 4,
+        onTimeCount: 1,
+        lateCount: 3,
+        avgDaysLate: 6,
+      });
+      const result = await service.getBuyerReliability('buyer-1');
+      expect(result.rating).toBe(BuyerReliabilityRating.SLIGHTLY_LATE);
+      expect(result.onTimePercentage).toBe(25);
+    });
+
+    it('rates a chronically late payer as habitually_late', async () => {
+      invoicesRepository.getBuyerPaymentStats.mockResolvedValue({
+        ...noHistory,
+        settledCount: 3,
+        lateCount: 3,
+        avgDaysLate: 24,
+      });
+      const result = await service.getBuyerReliability('buyer-1');
+      expect(result.rating).toBe(BuyerReliabilityRating.HABITUALLY_LATE);
+    });
+
+    it('lets a prior default outrank otherwise-good payment history', async () => {
+      invoicesRepository.getBuyerPaymentStats.mockResolvedValue({
+        ...noHistory,
+        settledCount: 20,
+        onTimeCount: 20,
+        avgDaysLate: 0,
+        defaultedCount: 1,
+      });
+      const result = await service.getBuyerReliability('buyer-1');
+      expect(result.rating).toBe(BuyerReliabilityRating.HAS_DEFAULTED);
     });
   });
 

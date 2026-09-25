@@ -1,9 +1,11 @@
-import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { DataSource, EntityManager } from 'typeorm';
 import { AuditLogsRepository } from '../audit/repositories/audit-logs.repository';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-user.interface';
 import { Money } from '../common/money';
+import { InvoiceResponseDto } from '../invoices/dto/invoice-response.dto';
 import { InvoiceStatus } from '../invoices/enums/invoice-status.enum';
+import { InvoiceStateMachine } from '../invoices/invoice-state-machine';
 import { InvoicesRepository } from '../invoices/repositories/invoices.repository';
 import { FinancingOffersRepository } from '../financing-offers/repositories/financing-offers.repository';
 import { OfferStatus } from '../financing-offers/enums/offer-status.enum';
@@ -131,14 +133,15 @@ export class LedgerService {
   }
 
   /**
-   * Due-date settlement: simulates the buyer's payment landing in escrow
-   * (no payment gateway is wired up yet — see AccountType.CLEARING),
-   * then splits it between the financier (their advance + fee) and the
-   * SME (the residual). Guarded by locking the invoice row and
-   * re-checking its status, exactly like acceptOffer: if this is somehow
-   * invoked twice for the same invoice (the scan runs twice, a job is
-   * redelivered), the second call sees the invoice already SETTLED and
-   * does nothing.
+   * Settlement, triggered by the buyer actually paying: records their
+   * payment landing in escrow (no payment gateway is wired up yet — see
+   * AccountType.CLEARING), then splits it between the financier (their
+   * advance + fee) and the SME (the residual).
+   *
+   * Accepts OVERDUE as well as FINANCED — a late payment still settles the
+   * invoice, it just means the buyer's reliability stats take the hit.
+   * Guarded by locking the invoice row and re-checking status, so a
+   * duplicate or redelivered trigger sees it already SETTLED and no-ops.
    */
   async settleInvoice(invoiceId: string): Promise<void> {
     await this.dataSource.transaction(async (manager) => {
@@ -146,14 +149,14 @@ export class LedgerService {
       if (!invoice) {
         throw new Error(`Invoice ${invoiceId} not found`);
       }
-      if (invoice.status !== InvoiceStatus.FINANCED) {
-        this.logger.log(`Invoice ${invoiceId} is ${invoice.status}, not FINANCED — skipping (idempotent no-op)`);
+      if (invoice.status !== InvoiceStatus.FINANCED && invoice.status !== InvoiceStatus.OVERDUE) {
+        this.logger.log(`Invoice ${invoiceId} is ${invoice.status}, not payable — skipping (idempotent no-op)`);
         return;
       }
 
       const acceptedOffer = await this.financingOffersRepository.findAcceptedForInvoice(invoiceId, manager);
       if (!acceptedOffer) {
-        throw new Error(`Invoice ${invoiceId} is FINANCED but has no accepted offer — data integrity issue`);
+        throw new Error(`Invoice ${invoiceId} is ${invoice.status} but has no accepted offer — data integrity issue`);
       }
 
       const faceValue = Money.of(invoice.faceValue);
@@ -223,16 +226,163 @@ export class LedgerService {
         await this.postEntry(smeTx.id, invoiceId, smeWallet.id, LedgerEntryType.CREDIT, smeAmount.toFixed(), manager);
       }
 
-      await this.invoicesRepository.updateStatus(invoiceId, InvoiceStatus.SETTLED, manager);
+      const paidAt = new Date();
+      InvoiceStateMachine.assertCanTransition(invoice.status, InvoiceStatus.SETTLED);
+      await this.invoicesRepository.updateStatus(invoiceId, InvoiceStatus.SETTLED, manager, { paidAt });
       await this.auditLogsRepository.record(
         {
           entityType: 'invoice',
           entityId: invoiceId,
-          fromStatus: InvoiceStatus.FINANCED,
+          fromStatus: invoice.status,
           toStatus: InvoiceStatus.SETTLED,
-          metadata: { financierAmount: financierAmount.toFixed(), smeAmount: smeAmount.toFixed() },
+          metadata: {
+            financierAmount: financierAmount.toFixed(),
+            smeAmount: smeAmount.toFixed(),
+            paidLate: invoice.status === InvoiceStatus.OVERDUE,
+          },
         },
         manager,
+      );
+    });
+  }
+
+  /**
+   * The buyer-facing entry point to settlement: checks they're actually the
+   * named buyer on this invoice, then runs the same settlement used
+   * everywhere else.
+   *
+   * Done synchronously rather than through a queue, unlike the payout:
+   * settlement here is pure local DB work, and the buyer should see the
+   * result immediately. Once a real payment gateway is involved this would
+   * split in two — collect the payment, then settle on the gateway's
+   * webhook — at which point it becomes async like the payout.
+   */
+  async payInvoiceAsBuyer(invoiceId: string, currentUser: AuthenticatedUser): Promise<InvoiceResponseDto> {
+    const invoice = await this.invoicesRepository.findById(invoiceId);
+    if (!invoice) {
+      throw new NotFoundException('Invoice not found');
+    }
+    if (invoice.buyerId !== currentUser.id) {
+      throw new ForbiddenException('Only the named buyer can pay this invoice');
+    }
+    if (invoice.status !== InvoiceStatus.FINANCED && invoice.status !== InvoiceStatus.OVERDUE) {
+      throw new ConflictException(`Invoice is ${invoice.status} and cannot be paid`);
+    }
+
+    await this.settleInvoice(invoiceId);
+
+    const settled = await this.invoicesRepository.findById(invoiceId);
+    return InvoiceResponseDto.fromEntity(settled!);
+  }
+
+  /**
+   * The arrears path, driven by the scheduled scan. One locked transaction
+   * decides which transition (if any) applies, rather than the scan
+   * deciding from a stale read:
+   *
+   *  - FINANCED and past due          -> OVERDUE (buyer is simply late)
+   *  - OVERDUE and past grace period  -> DEFAULTED, plus recourse
+   *
+   * Recourse means the SME repays the financier's **advance** — the
+   * financier gets their capital back but forfeits the fee, since the deal
+   * never completed. The loss can't just evaporate: double-entry forces it
+   * to land somewhere, and under a recourse agreement that somewhere is
+   * the SME's wallet.
+   */
+  async processArrears(invoiceId: string, gracePeriodDays: number): Promise<void> {
+    await this.dataSource.transaction(async (manager) => {
+      const invoice = await this.invoicesRepository.findByIdForUpdate(invoiceId, manager);
+      if (!invoice) {
+        throw new Error(`Invoice ${invoiceId} not found`);
+      }
+
+      const dueDate = new Date(`${invoice.dueDate}T00:00:00.000Z`);
+      const now = new Date();
+
+      if (invoice.status === InvoiceStatus.FINANCED) {
+        if (now <= dueDate) {
+          return; // not actually late; nothing to do
+        }
+        InvoiceStateMachine.assertCanTransition(invoice.status, InvoiceStatus.OVERDUE);
+        await this.invoicesRepository.updateStatus(invoiceId, InvoiceStatus.OVERDUE, manager);
+        await this.auditLogsRepository.record(
+          {
+            entityType: 'invoice',
+            entityId: invoiceId,
+            fromStatus: InvoiceStatus.FINANCED,
+            toStatus: InvoiceStatus.OVERDUE,
+            metadata: { dueDate: invoice.dueDate },
+          },
+          manager,
+        );
+        this.logger.warn(`Invoice ${invoiceId} is past due (${invoice.dueDate}) and unpaid — marked OVERDUE`);
+        return;
+      }
+
+      if (invoice.status !== InvoiceStatus.OVERDUE) {
+        return; // already settled, defaulted, or otherwise not in arrears
+      }
+
+      const defaultAfter = new Date(dueDate.getTime() + gracePeriodDays * 24 * 60 * 60 * 1000);
+      if (now <= defaultAfter) {
+        return; // still inside the grace period
+      }
+
+      const acceptedOffer = await this.financingOffersRepository.findAcceptedForInvoice(invoiceId, manager);
+      if (!acceptedOffer) {
+        throw new Error(`Invoice ${invoiceId} is OVERDUE but has no accepted offer — data integrity issue`);
+      }
+
+      const advance = Money.of(acceptedOffer.advanceAmount);
+      const smeWallet = await this.accountsRepository.findOrCreateWallet(invoice.sellerId, invoice.currency, manager);
+      const financierWallet = await this.accountsRepository.findOrCreateWallet(
+        acceptedOffer.financierId,
+        invoice.currency,
+        manager,
+      );
+      await this.lockAccounts([smeWallet.id, financierWallet.id], manager);
+
+      const transaction = await this.transactionsRepository.insert(
+        {
+          invoiceId,
+          type: TransactionType.SME_RECOURSE_TO_FINANCIER,
+          amount: advance.toFixed(),
+          currency: invoice.currency,
+          idempotencyKey: `recourse-${invoiceId}`,
+        },
+        manager,
+      );
+      await this.postEntry(transaction.id, invoiceId, smeWallet.id, LedgerEntryType.DEBIT, advance.toFixed(), manager);
+      await this.postEntry(
+        transaction.id,
+        invoiceId,
+        financierWallet.id,
+        LedgerEntryType.CREDIT,
+        advance.toFixed(),
+        manager,
+      );
+
+      InvoiceStateMachine.assertCanTransition(invoice.status, InvoiceStatus.DEFAULTED);
+      await this.invoicesRepository.updateStatus(invoiceId, InvoiceStatus.DEFAULTED, manager, {
+        defaultedAt: new Date(),
+      });
+      await this.auditLogsRepository.record(
+        {
+          entityType: 'invoice',
+          entityId: invoiceId,
+          fromStatus: InvoiceStatus.OVERDUE,
+          toStatus: InvoiceStatus.DEFAULTED,
+          metadata: {
+            recourseAmount: advance.toFixed(),
+            recoveredFrom: invoice.sellerId,
+            paidTo: acceptedOffer.financierId,
+            gracePeriodDays,
+          },
+        },
+        manager,
+      );
+      this.logger.warn(
+        `Invoice ${invoiceId} defaulted — recovered ${invoice.currency} ${advance.toFixed()} from the SME under recourse`,
       );
     });
   }
